@@ -141,6 +141,20 @@ pasada es lenta (~2,5 min con ~70 trazas, porque clasifica una por una); despué
 tarda ~14 s. Si el token de Orchestrate vence, la página lo avisa: `make wxo-login` y
 reiniciar.
 
+**Alojado (Render).** Un servicio aparte de la tools API (`Dockerfile.monitor`,
+`src/andes/apps/monitor/`), para que un fallo suyo no afecte a los agentes y la clave de
+Orchestrate no viva en la API de las tools. Lee la API de trazas directamente (token IAM a
+partir de `WXO_API_KEY`, sin el CLI). Toda ruta de datos exige la clave `MONITOR_KEY`
+(cabecera `X-Monitor-Key`); la página solo trae la pantalla de acceso. La lista ya trae el
+agente y la sesión, así que clasifica y agrupa sin descargar cada traza; los pasos de un
+turno se piden al abrirlo (la API permite 4 por minuto) y se guardan en caché. Solo lista y
+abre trazas de los agentes de `ANDES_AGENT_IDS`; sin esa variable no muestra nada. Variables
+en Render: `MONITOR_KEY`, `WXO_API_KEY`, `WXO_INSTANCE_URL`, `ANDES_AGENT_IDS`. La clave
+local vive en `.keys/monitor_key` (ignorada por git); la URL no se publica en el repo.
+`autoDeploy` está apagado: se actualiza con un despliegue por commit, como la tools API.
+Las trazas contienen lo que escribieron los testers (correos, teléfonos): quien tenga la
+clave lo ve todo, así que con clientes reales habría que ocultar entradas y salidas.
+
 Las trazas solo cubren las últimas horas; para conservar histórico hay que exportarlas.
 
 **Correlación con la tools API.** Orchestrate no envía `X-Request-ID` en las llamadas a las
