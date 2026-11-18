@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Andes Travel · monitor</title>
+<style>
+:root{--bg:#fafaf8;--panel:#fff;--ink:#1c1c1a;--mute:#6b6b66;--line:#e4e3de;--sel:#eef3ff;
+--span:#8a8a84;--chain:#6c5ce7;--gen:#0a7d5a;--tool:#c26a00;--err:#c0392b}
+@media (prefers-color-scheme:dark){:root{--bg:#161615;--panel:#1e1e1c;--ink:#ecebe6;--mute:#9a9992;
+--line:#33332f;--sel:#232a3a;--span:#9a9992;--chain:#a29bfe;--gen:#3ccf9e;--tool:#f0a040;--err:#ff6b5b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 system-ui,sans-serif}
+header{padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:baseline;flex-wrap:wrap}
+h1{font-size:16px;margin:0}.mute{color:var(--mute)}
+main{display:grid;grid-template-columns:320px 1fr;height:calc(100vh - 49px)}
+@media (max-width:800px){main{grid-template-columns:1fr;height:auto}}
+#list{overflow:auto;border-right:1px solid var(--line)}
+.row{padding:10px 16px;border-bottom:1px solid var(--line);cursor:pointer}
+.row:hover{background:var(--sel)}.row.sel{background:var(--sel);box-shadow:inset 3px 0 var(--chain)}
+.pill{font-size:12px;padding:1px 7px;border-radius:9px;border:1px solid var(--line);margin-right:4px;color:var(--mute)}
+#detail{overflow:auto;padding:16px}
+.turns{display:flex;gap:6px;flex-wrap:wrap}
+.turn{padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);cursor:pointer;font:inherit}
+.turn.on{background:var(--sel);border-color:var(--chain)}
+.msg{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin:8px 0;white-space:pre-wrap;word-break:break-word}
+.msg b{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute)}
+.wf{background:var(--panel);border:1px solid var(--line);border-radius:8px}
+.sp{display:grid;grid-template-columns:minmax(180px,34%) 1fr 70px;align-items:center;gap:8px;padding:3px 10px;
+cursor:pointer;border-bottom:1px solid var(--line)}.sp:last-child{border:0}.sp:hover,.sp.sel{background:var(--sel)}
+.nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.track{position:relative;height:12px}
+.bar{position:absolute;top:2px;height:8px;min-width:2px;border-radius:2px;background:var(--span)}
+.t-CHAIN .bar{background:var(--chain)}.t-GENERATION .bar{background:var(--gen)}.t-TOOL .bar{background:var(--tool)}
+.sp.err .nm{color:var(--err)}.sp.err .bar{background:var(--err)}
+.ms{text-align:right;color:var(--mute);font-variant-numeric:tabular-nums}
+.blk{background:var(--panel);border:1px solid var(--line);border-radius:8px;margin-top:10px}
+.blk h3{margin:0;padding:6px 10px;font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--mute);border-bottom:1px solid var(--line)}
+pre{margin:0;padding:10px;white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,Menlo,monospace;max-height:340px;overflow:auto}
+input,button{font:inherit}input{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)}
+.empty{padding:40px;text-align:center;color:var(--mute)}
+#gate{max-width:360px;margin:20vh auto;padding:0 16px;text-align:center}#gate input{width:100%;margin:12px 0}
+#gate button{padding:6px 16px;border:1px solid var(--chain);border-radius:6px;background:var(--sel);color:var(--ink);cursor:pointer}
+.err-t{color:var(--err)}
+</style></head><body>
+<div id="gate" hidden><h1>Andes Travel · monitor</h1>
+<p class="mute">Ingresa la clave de acceso.</p>
+<form id="f"><input id="k" type="password" autocomplete="current-password" aria-label="Clave" autofocus>
+<button>Entrar</button></form><p id="gerr" class="err-t"></p></div>
+<div id="app" hidden>
+<header><h1>Andes Travel · conversaciones de Orchestrate</h1><span class="mute" id="count"></span>
+<span id="live" class="mute"></span><input id="q" placeholder="Filtrar por texto o ID" aria-label="Filtrar">
+<button id="out" class="turn">Salir</button></header>
+<main><div id="list"></div><div id="detail"><div class="empty">Elige una conversación.</div></div></main></div>
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmt = ms => ms >= 1000 ? (ms/1000).toFixed(2)+' s' : Math.round(ms)+' ms';
+const pretty = v => v == null ? '—' : typeof v === 'string' ? v : JSON.stringify(v, null, 2);
+const local = iso => iso ? new Date(iso).toLocaleString() : '';
+let KEY = '', DATA = [], cur = null, timer = null;
+try { KEY = sessionStorage.getItem('mk') || ''; } catch (e) {}
+
+async function api(path){
+  const r = await fetch(path, {headers: {'X-Monitor-Key': KEY}, cache: 'no-store'});
+  if (r.status === 401) { const e = new Error('clave'); e.auth = true; throw e; }
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || ('HTTP ' + r.status));
+  return r.json();
+}
+function gate(msg){ clearInterval(timer); $('#app').hidden = true; $('#gate').hidden = false; $('#gerr').textContent = msg || ''; $('#k').focus(); }
+$('#f').onsubmit = async e => {
+  e.preventDefault(); KEY = $('#k').value; $('#k').value = '';
+  try { await api('/api/conversations'); try { sessionStorage.setItem('mk', KEY); } catch (x) {} start(); }
+  catch (x) { gate(x.auth ? 'Clave incorrecta.' : 'No se pudo conectar: ' + x.message); }
+};
+$('#out').onclick = () => { try { sessionStorage.removeItem('mk'); } catch (e) {} KEY = ''; DATA = []; gate(''); };
+
+function list(){
+  const q = $('#q').value.toLowerCase();
+  const rows = DATA.filter(c => !q || c.id.includes(q) || c.turns.some(t => (t.user + ' ' + t.answer + t.trace_id).toLowerCase().includes(q)));
+  $('#count').textContent = rows.length + ' de ' + DATA.length + ' conversaciones';
+  $('#list').innerHTML = rows.length ? rows.map(c => `<div class="row${cur===c.id?' sel':''}" data-id="${esc(c.id)}">
+    <b>${esc(local(c.started))}</b> <span class="mute">${fmt(c.latency_ms)}</span><br>
+    <span class="pill">${c.turns.length} ${c.turns.length===1?'turno':'turnos'}</span>
+    <div class="mute" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.turns[0].user)}</div></div>`).join('')
+    : '<div class="empty">Sin conversaciones en las últimas 4 h.</div>';
+  document.querySelectorAll('.row').forEach(r => r.onclick = () => show(r.dataset.id, 0));
+}
+async function show(id, i){
+  cur = id; list();
+  const c = DATA.find(x => x.id === id); if (!c || !c.turns[i]) return;
+  const t = c.turns[i];
+  $('#detail').innerHTML = `<div class="mute">Conversación ${esc(c.id)} · ${c.turns.length} ${c.turns.length===1?'turno':'turnos'} · ${fmt(c.latency_ms)}</div>
+  <div class="turns" style="margin-top:8px">${c.turns.map((x,j) => `<button class="turn${j===i?' on':''}" data-j="${j}">Turno ${j+1} · ${fmt(x.latency_ms)}</button>`).join('')}</div>
+  <div class="msg"><b>Viajero</b>${esc(t.user) || '—'}</div><div class="msg"><b>Asistente</b>${esc(t.answer) || '—'}</div>
+  <div class="mute" style="margin:8px 0">Traza ${esc(t.trace_id)} · ${esc(local(t.started))} · ${t.steps} pasos</div><div id="steps" class="mute">Cargando pasos…</div><div id="io"></div>`;
+  document.querySelectorAll('.turn[data-j]').forEach(b => b.onclick = () => show(id, +b.dataset.j));
+  try {
+    const d = await api('/api/traces/' + t.trace_id + '/steps');
+    if (cur !== id) return;
+    const total = Math.max(t.latency_ms, ...d.steps.map(s => s.start_ms + s.dur_ms), 1);
+    $('#steps').className = ''; $('#steps').innerHTML = `<div class="wf">${d.steps.map((s,k) => `<div class="sp t-${esc(s.type)}${s.error?' err':''}" data-i="${k}">
+      <div class="nm" style="padding-left:${s.depth*14}px" title="${esc(s.name)}">${esc(s.name)} <span class="mute">${esc(s.type.toLowerCase())}</span></div>
+      <div class="track"><div class="bar" style="left:${s.start_ms/total*100}%;width:${Math.max(s.dur_ms/total*100,.3)}%"></div></div>
+      <div class="ms">${fmt(s.dur_ms)}</div></div>`).join('')}</div>`;
+    document.querySelectorAll('.sp').forEach(r => r.onclick = () => step(d.steps, +r.dataset.i));
+  } catch (e) { if (e.auth) return gate('Clave incorrecta.'); $('#steps').textContent = 'No se pudieron cargar los pasos: ' + e.message; }
+}
+function step(steps, i){
+  const s = steps[i]; document.querySelectorAll('.sp').forEach((r,j) => r.classList.toggle('sel', j===i));
+  const blk = (h, v) => `<div class="blk"><h3>${h}</h3><pre>${esc(pretty(v))}</pre></div>`;
+  $('#io').innerHTML = `<div style="margin-top:10px"><b>${esc(s.name)}</b> <span class="mute">${esc(s.type)} · ${fmt(s.dur_ms)}${s.model?' · '+esc(s.model):''}${s.tokens?' · '+s.tokens+' tokens':''}</span></div>`
+    + (s.message ? `<div class="err-t">${esc(s.message)}</div>` : '') + blk('Entrada', s.input) + blk('Salida', s.output);
+  $('#io').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+async function poll(){
+  try {
+    const d = await api('/api/conversations'); DATA = d.conversations;
+    $('#live').textContent = d.error ? '⚠ ' + d.error : '● en vivo · ' + new Date().toLocaleTimeString();
+    $('#live').style.color = d.error ? 'var(--err)' : 'var(--gen)';
+    if (!cur && DATA.length) show(DATA[0].id, 0); else list();
+  } catch (e) { if (e.auth) return gate('Clave incorrecta.'); $('#live').textContent = '⚠ sin conexión con el servidor'; $('#live').style.color = 'var(--err)'; }
+}
+function start(){ $('#gate').hidden = true; $('#app').hidden = false; poll(); timer = setInterval(poll, 15000); }
+$('#q').oninput = list;
+if (KEY) start(); else gate('');
+</script></body></html>

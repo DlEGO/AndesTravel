@@ -209,7 +209,8 @@ function list(){
 
 function show(id, i){
   cur = id; turn = i; list();
-  const c = DATA.find(x => x.id === id), t = c.turns[i], total = Math.max(t.total_ms, 1);
+  const c = DATA.find(x => x.id === id); if (!c || !c.turns[i]) return;
+  const t = c.turns[i], total = Math.max(t.total_ms, 1);
   $('#detail').innerHTML = `<div class="mute" style="margin-bottom:8px">Conversación ${esc(c.id)} · ${c.turns.length} ${c.turns.length===1?'turno':'turnos'} · ${fmt(c.total_ms)}</div>
   <div class="turns">${c.turns.map((x,j) => `<button class="turn${j===i?' on':''}${x.errors?' bad':''}" data-j="${j}">Turno ${j+1} · ${fmt(x.total_ms)}</button>`).join('')}</div>
   <div class="mute" style="margin:8px 0">Traza ${esc(t.trace_id)} · ${esc(t.started)} · ${t.generations} LLM${t.tokens?' · '+t.tokens+' tokens':''}</div>
@@ -233,15 +234,24 @@ function span(t, i){
 }
 
 async function poll(){
+  const status = (text, bad) => { $('#live').textContent = text; $('#live').style.color = bad ? 'var(--err)' : 'var(--gen)'; };
+  let d;
   try {
     const r = await fetch('/data.json', {cache: 'no-store'});
-    const d = await r.json();
-    const open = cur && DATA.find(x => x.id === cur), grew = open && (d.conversations.find(x => x.id === cur) || {turns: []}).turns.length !== open.turns.length;
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    d = await r.json();
+  } catch (e) { console.error('poll: no se pudo leer /data.json', e); status('⚠ sin conexión con el servidor (¿sigue corriendo make wxo-traces-live?)', true); return; }
+  try {
+    const open = cur && DATA.find(x => x.id === cur);
+    const now = cur && d.conversations.find(x => x.id === cur);
+    const grew = open && now && now.turns.length !== open.turns.length;
     DATA = d.conversations;
-    $('#live').textContent = d.error ? '⚠ ' + d.error : '● en vivo · ' + d.updated;
-    $('#live').style.color = d.error ? 'var(--err)' : 'var(--gen)';
-    if (!cur && DATA.length) show(DATA[0].id, 0); else if (grew) show(cur, DATA.find(x => x.id === cur).turns.length - 1); else list();
-  } catch (e) { $('#live').textContent = '⚠ sin conexión con el servidor'; $('#live').style.color = 'var(--err)'; }
+    status(d.error ? '⚠ ' + d.error : '● en vivo · ' + d.updated, !!d.error);
+    if (cur && !now) cur = null;  // the open conversation is gone: go back to the newest
+    if (!cur && DATA.length) show(DATA[0].id, 0);
+    else if (grew) show(cur, now.turns.length - 1);
+    else list();
+  } catch (e) { console.error('poll: error al dibujar', e); status('⚠ error al dibujar la página: ' + e.message, true); }
 }
 $('#q').oninput = list; list(); if (DATA.length) show(DATA[0].id, 0);
 if (LIVE) { poll(); setInterval(poll, 5000); }
