@@ -95,6 +95,41 @@ Los secretos viven fuera del repo, que es público:
 La llave pública del chat está registrada en Orchestrate (Settings → Embed Security). Las
 URLs de la API y de la landing no se publican en el repo.
 
+## Observabilidad
+
+Dos capas, sin servicios nuevos ni costo:
+
+**Tools API (Render).** Cada request deja una línea JSON en stdout (`andes.access`) con
+`request_id`, ruta, status, latencia y resultado de dominio (`ok` o el código del error,
+porque los errores de dominio responden 200 con `ok=false`). Nunca se registran cuerpos,
+query strings ni correos: el viajero aparece como un hash corto. `X-Request-ID` se acepta
+del llamador y se devuelve en la respuesta. `GET /metrics` (con `X-API-Key`) entrega
+contadores y latencias en formato Prometheus, y los eventos de `price_guard`
+(`passed`, `replaced`, `verify_failed`, `unknown_payload`). Las métricas viven en memoria
+y se reinician cuando Render duerme o reinicia la API.
+
+```bash
+make api-metrics     # métricas del servicio desplegado
+```
+
+**Agentes (Orchestrate).** Trazas nativas de la instancia, de solo lectura. No se configura
+Langfuse: la integración es una sola para toda la instancia, sin filtro por agente, y la
+instancia es compartida con otros proyectos. Como la API de trazas tampoco filtra por
+agente, `make wxo-traces` lista únicamente las de los agentes de `orchestrate/agents/` y
+se niega a exportar cualquier otra, para no abrir conversaciones de otros equipos.
+
+```bash
+make wxo-traces                    # últimas 4 h (máximo de la API)
+make wxo-traces TRACE=<id>         # exporta una traza propia a build/traces/<id>.json
+```
+
+Para verlas sin leer JSON, `make wxo-traces-view` exporta las trazas propias y genera
+`build/traces/index.html`: lista de trazas, cascada de pasos (LLM, tools, tiempos) y
+entrada/salida de cada paso. Es una página local sin ninguna petición externa, porque las
+trazas contienen lo que escribieron los viajeros; `build/` no se sube a git.
+
+Las trazas solo cubren las últimas horas; para conservar histórico hay que exportarlas.
+
 ## Costos
 
 Todo corre en planes gratuitos, sin método de pago:

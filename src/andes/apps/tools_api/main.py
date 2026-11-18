@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
 from fastapi.security import APIKeyHeader
 
-from andes.apps.tools_api import logic, price_guard, webchat
+from andes.apps.tools_api import logic, observability, price_guard, webchat
 from andes.apps.tools_api.logic import DomainError
 from andes.apps.tools_api.repository import (
     MemoryRepository,
@@ -82,6 +82,7 @@ Now = Annotated[datetime, Depends(_now)]
 
 
 def _fail(model: type, exc: DomainError):
+    observability.mark_error(exc.code)
     return model(ok=False, error=ErrorInfo(code=exc.code, message=exc.message))
 
 
@@ -120,8 +121,11 @@ def create_app(
     )
     app.state.repo = repo
     app.state.clock = clock
+    metrics = observability.Metrics()
+    app.state.metrics = metrics
     pem = webchat_key if webchat_key is not None else os.environ.get("WEBCHAT_PRIVATE_KEY", "")
     signing_key = webchat.load_private_key(pem.replace("\\n", "\n")) if pem else None
+    app.add_middleware(observability.ObservabilityMiddleware, metrics=metrics)
     app.add_middleware(
         CORSMiddleware, allow_origin_regex=WEBCHAT_ORIGINS, allow_methods=["GET"], max_age=3600
     )
@@ -137,6 +141,12 @@ def create_app(
     @app.get("/health", include_in_schema=False)
     async def health() -> dict:
         return {"status": "ok", "storage": storage}
+
+    @app.get(
+        "/metrics", include_in_schema=False, response_class=PlainTextResponse, dependencies=auth
+    )
+    async def metrics_endpoint() -> str:
+        return metrics.render()
 
     # ----------------------------------------------------------------- travelers
 
@@ -160,6 +170,7 @@ def create_app(
             tid = logic.normalize_traveler_id(traveler_id)
         except DomainError as exc:
             return _fail(TravelerContext, exc).model_copy(update={"today": today})
+        observability.mark_traveler(tid)
         profile = await repo.get_profile(tid)
         reservations = await repo.recent_reservations(tid)
         consented = bool(profile and profile.consent_personalization)
@@ -197,6 +208,7 @@ def create_app(
             persona = logic.clean_persona_prompt(body.persona_prompt)
         except DomainError as exc:
             return _fail(ProfileOut, exc)
+        observability.mark_traveler(tid)
         if not body.consent_personalization:
             # Without consent nothing is kept: erase any stored profile and create no row
             # (a refusal must not make the traveler "known").
@@ -325,6 +337,7 @@ def create_app(
             n = logic.check_travelers(body.travelers)
         except DomainError as exc:
             return _fail(QuoteOut, exc)
+        observability.mark_traveler(tid)
         lines = logic.quote_lines(pkg, n, body.include_insurance)
         total = sum(line["amount"] for line in lines)
         quote = Quote(
@@ -360,6 +373,7 @@ def create_app(
             tid = logic.normalize_traveler_id(body.traveler_id)
         except DomainError as exc:
             return _fail(ReservationOut, exc)
+        observability.mark_traveler(tid)
         quote = await repo.get_quote(body.quote_id.strip())
         if quote is None or quote.traveler_id != tid:
             return _fail(
@@ -466,17 +480,24 @@ def create_app(
                     "price_guard: no answer text; shape=%s",
                     json.dumps(price_guard.shape(body.payload))[:1500],
                 )
+                metrics.guard_event("unknown_payload")
+            else:
+                metrics.guard_event("no_amounts")
             return PluginOut()
         try:
             quoted = await repo.quoted_amounts(at - QUOTED_WINDOW)
         except Exception:  # cannot verify: do not let an amount through
             log.exception("price_guard: could not load quoted amounts")
+            metrics.guard_event("verify_failed")
             quoted = set()
         missing = price_guard.unbacked(body.payload, quoted)
         if not missing:
+            metrics.guard_event("passed")
             return PluginOut()
         # amounts only (no conversation text), to tell invented prices from false positives
         log.warning("price_guard: replaced an answer; unquoted amounts %s", sorted(missing))
+        metrics.guard_event("replaced")
+        observability.mark_error("price_replaced")
         return PluginOut(modified_payload=price_guard.replace_answer(body.payload))
 
     return app
@@ -496,4 +517,5 @@ def _quote_out(quote: Quote) -> QuoteOut:
     )
 
 
+observability.configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
 app = create_app()

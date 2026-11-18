@@ -115,6 +115,20 @@ tools-specs: ## Regenerate build/andes_tools_api.openapi.yaml (tools API) to imp
 wxo-plugins: tools-specs wxo-login ## Orchestrate: (re)import the price_guard plug-in (attached to the supervisor's agent_post_invoke)
 	$(dir $(WXO_PY))orchestrate tools import -k openapi -f build/price_guard.openapi.yaml -a andes_tools_api
 
+.PHONY: wxo-traces
+wxo-traces: wxo-login ## Orchestrate: native traces of the Andes Travel agents only (LAST=4h; TRACE=<id> exports one)
+	$(WXO_PY) scripts/wxo_traces.py --last $(or $(LAST),4h) $(if $(TRACE),--trace $(TRACE))
+
+.PHONY: wxo-traces-view
+wxo-traces-view: wxo-login ## Orchestrate: export our traces (LAST=4h) and build build/traces/index.html (local, offline)
+	$(WXO_PY) scripts/wxo_traces.py --last $(or $(LAST),4h) --export-all
+	$(PY) python scripts/trace_viewer.py
+	@open build/traces/index.html 2>/dev/null || echo "open build/traces/index.html"
+
+.PHONY: api-metrics
+api-metrics: ## Tools API: Prometheus metrics of the deployed service (needs TOOLS_API_URL, TOOLS_API_KEY in .env)
+	@set -a; . ./.env; set +a; curl -fsS -H "X-API-Key: $$TOOLS_API_KEY" "$$TOOLS_API_URL/metrics"
+
 .PHONY: wxo-connection-creds
 wxo-connection-creds: ## Orchestrate: give the andes_tools_api connection the TOOLS_API_KEY from .env (ENV=draft|live)
 	@set -a; . ./.env; set +a; \
