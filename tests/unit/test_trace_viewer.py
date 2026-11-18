@@ -58,3 +58,25 @@ def test_load_skips_broken_and_empty_files(tmp_path: Path) -> None:
     (tmp_path / "bad.json").write_text("{nope")
     (tmp_path / "empty.json").write_text(json.dumps({"error": "No trace data available"}))
     assert len(trace_viewer.load(tmp_path)) == 1
+
+
+def _turn(trace_id: str, minute: str, thread: str | None) -> dict:
+    meta = {"attributes": {"thread.id": thread}} if thread else None
+    first = _obs("1", "POST /runs", "00.000", "02.000", metadata=meta)
+    first["startTime"] = f"2026-11-18T15:{minute}:00.000Z"
+    first["endTime"] = f"2026-11-18T15:{minute}:02.000Z"
+    return {"trace_id": trace_id, "observations": [first]}
+
+
+def test_turns_are_grouped_by_thread_newest_conversation_first() -> None:
+    turns = [
+        trace_viewer.summarize(_turn("t1", "01", "A")),
+        trace_viewer.summarize(_turn("t3", "03", "B")),
+        trace_viewer.summarize(_turn("t2", "02", "A")),
+        trace_viewer.summarize(_turn("t4", "04", None)),
+    ]
+    convs = trace_viewer.group(turns)
+    assert [c["id"] for c in convs] == ["t4", "B", "A"]  # no thread: a conversation of one
+    a = convs[2]
+    assert [t["trace_id"] for t in a["turns"]] == ["t1", "t2"]  # turns in order
+    assert a["total_ms"] == 4000.0

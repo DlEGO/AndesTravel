@@ -115,8 +115,10 @@ make api-metrics     # métricas del servicio desplegado
 **Agentes (Orchestrate).** Trazas nativas de la instancia, de solo lectura. No se configura
 Langfuse: la integración es una sola para toda la instancia, sin filtro por agente, y la
 instancia es compartida con otros proyectos. Como la API de trazas tampoco filtra por
-agente, `make wxo-traces` lista únicamente las de los agentes de `orchestrate/agents/` y
-se niega a exportar cualquier otra, para no abrir conversaciones de otros equipos.
+agente, `make wxo-traces` conserva solo las trazas que involucran a los agentes de
+`orchestrate/agents/`. La tabla de Orchestrate muestra `-` como agente en las trazas de
+la landing, así que esas se clasifican leyendo en memoria el atributo `agent.id` (nunca
+entradas ni salidas) y se descartan si no es de Andes Travel. Solo se guardan las propias.
 
 ```bash
 make wxo-traces                    # últimas 4 h (máximo de la API)
@@ -124,11 +126,18 @@ make wxo-traces TRACE=<id>         # exporta una traza propia a build/traces/<id
 ```
 
 Para verlas sin leer JSON, `make wxo-traces-view` exporta las trazas propias y genera
-`build/traces/index.html`: lista de trazas, cascada de pasos (LLM, tools, tiempos) y
+`build/traces/index.html`: una lista de conversaciones (cada traza es un turno; se agrupan
+por `thread.id`), la cascada de pasos de cada turno (LLM, tools, tiempos) y la
 entrada/salida de cada paso. Es una página local sin ninguna petición externa, porque las
 trazas contienen lo que escribieron los viajeros; `build/` no se sube a git.
 
 Las trazas solo cubren las últimas horas; para conservar histórico hay que exportarlas.
+
+**Correlación con la tools API.** Orchestrate no envía `X-Request-ID` en las llamadas a las
+tools (se comprobó en Render: todos los ids eran generados por la API). Las trazas guardan
+su propio `wxo.request_id` y no los headers salientes. Para cruzar un turno con los logs de
+la API hay que usar la hora y la ruta, más el campo `traveler` (hash del correo) que
+aparece en los logs de `/travelers`, `/quotes` y `/reservations`.
 
 ## Costos
 
