@@ -29,6 +29,7 @@ from andes.apps.monitor.orchestrate import OrchestrateError, TracesClient
 
 log = logging.getLogger("andes.monitor")
 CACHE_SECONDS = 10  # conversations list: many tabs, one upstream call
+PREFETCH = 12  # newest turns whose steps are downloaded in the background
 STEPS_CACHE_SECONDS = 600
 PAGE = (Path(__file__).parent / "page.html").read_text(encoding="utf-8")
 HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"}
@@ -60,7 +61,34 @@ def create_app(
     )
     listing: dict = {"at": -1e9, "data": None}
     steps_cache: dict[str, tuple[float, list[dict]]] = {}
+    inflight: dict[str, asyncio.Task] = {}
+    background: set[asyncio.Task] = set()  # keeps prefetch tasks alive until they finish
     list_lock = asyncio.Lock()
+
+    async def _fetch_steps(trace_id: str) -> list[dict]:
+        tree = model.step_tree(await client.steps(trace_id))
+        steps_cache[trace_id] = (clock(), tree)
+        return tree
+
+    async def load_steps(trace_id: str) -> list[dict]:
+        """One download per trace, shared by whoever asks while it is running."""
+        cached = steps_cache.get(trace_id)
+        if cached and clock() - cached[0] < STEPS_CACHE_SECONDS:
+            return cached[1]
+        task = inflight.get(trace_id)
+        if task is None:
+            task = asyncio.ensure_future(_fetch_steps(trace_id))
+            inflight[trace_id] = task
+            task.add_done_callback(lambda _: inflight.pop(trace_id, None))
+        return await asyncio.shield(task)
+
+    async def prefetch(traces: list[dict]) -> None:
+        """Warm the cache for the newest turns so opening one is instant."""
+        for trace in traces[:PREFETCH]:
+            try:
+                await load_steps(trace["id"])
+            except OrchestrateError:
+                return  # rate limited or down: opening a turn will report it
 
     def require_key(request: Request) -> None:
         given = request.headers.get("x-monitor-key", "")
@@ -88,6 +116,8 @@ def create_app(
                         at=clock(),
                         data={"conversations": model.conversations(traces), "error": None},
                     )
+                    background.add(task := asyncio.ensure_future(prefetch(traces)))
+                    task.add_done_callback(background.discard)
                 except OrchestrateError as exc:
                     if listing["data"] is None:
                         return JSONResponse(
@@ -102,19 +132,15 @@ def create_app(
     async def trace_steps(trace_id: str) -> JSONResponse:
         if not (len(trace_id) == 32 and all(c in "0123456789abcdef" for c in trace_id)):
             raise HTTPException(400, "trace id must be 32 hex characters")
-        cached = steps_cache.get(trace_id)
-        if cached and clock() - cached[0] < STEPS_CACHE_SECONDS:
-            return JSONResponse({"steps": cached[1]}, headers=HEADERS)
         known = listing["data"] and any(
             t["trace_id"] == trace_id for c in listing["data"]["conversations"] for t in c["turns"]
         )
         if not known:  # only traces we listed (so: ours) can be opened
             raise HTTPException(404, "unknown trace")
         try:
-            tree = model.step_tree(await client.steps(trace_id))
+            tree = await load_steps(trace_id)
         except OrchestrateError as exc:
             raise HTTPException(502, str(exc)) from exc
-        steps_cache[trace_id] = (clock(), tree)
         return JSONResponse({"steps": tree}, headers=HEADERS)
 
     return app

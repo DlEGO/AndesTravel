@@ -47,10 +47,13 @@ class FakeOrchestrate:
     def __init__(self, traces: list[dict], observations: list[dict] | None = None) -> None:
         self.traces, self.observations = traces, observations or []
         self.calls: list[str] = []
+        self.observed_traces: list[str] = []  # trace ids asked of /observations
         self.status = 200
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request.url.path)
+        if request.url.path.endswith("/observations"):
+            self.observed_traces.append(request.url.params.get("traceId", ""))
         if str(request.url).startswith(IAM_URL):
             return httpx.Response(200, json={"access_token": "t", "expires_in": 3600})
         if self.status != 200:
@@ -113,7 +116,7 @@ def test_only_our_agents_are_listed_and_grouped_by_session(web: TestClient) -> N
 def test_a_foreign_trace_cannot_be_opened(web: TestClient, fake: FakeOrchestrate) -> None:
     web.get("/api/conversations", headers=H)
     assert web.get(f"/api/traces/{T3}/steps", headers=H).status_code == 404
-    assert not any(p.endswith("/observations") for p in fake.calls)  # never even asked upstream
+    assert T3 not in fake.observed_traces  # never even asked upstream (prefetch is ours only)
 
 
 def test_trace_id_is_validated(web: TestClient) -> None:
@@ -128,7 +131,8 @@ def test_steps_come_as_an_exact_tree_and_are_cached(web: TestClient, fake: FakeO
         ("child", 1, True),
     ]
     web.get(f"/api/traces/{T1}/steps", headers=H)
-    assert sum(p.endswith("/observations") for p in fake.calls) == 1  # 4 calls/min: cache it
+    # T1 and T2 once each (opened + prefetched share the same cache), not once per request
+    assert sum(p.endswith("/observations") for p in fake.calls) <= 2
 
 
 def test_listing_is_cached_between_tabs(web: TestClient, fake: FakeOrchestrate) -> None:
@@ -153,23 +157,54 @@ def test_token_is_reused_until_it_expires(fake: FakeOrchestrate) -> None:
     assert sum(p.endswith("/token") for p in fake.calls) == 1
 
 
-def test_step_calls_wait_for_the_per_minute_slot() -> None:
+def test_steps_are_not_throttled_client_side() -> None:
+    """Measured against the real API: no 4-per-minute limit, so downloads must not wait."""
+    import asyncio
+    import time
+
+    fake = FakeOrchestrate([], [_obs("o", None, "00", "01")])
+    client = _client(fake, now=100.0)
+
+    async def many() -> None:
+        await asyncio.gather(*(client.steps(f"{i:032x}") for i in range(10)))
+
+    started = time.monotonic()
+    asyncio.run(many())
+    assert time.monotonic() - started < 2
+    assert sum(p.endswith("/observations") for p in fake.calls) == 10
+
+
+def test_a_real_429_pauses_the_next_download() -> None:
     import asyncio
 
-    slept: list[float] = []
+    fake = FakeOrchestrate([], [_obs("o", None, "00", "01")])
+    client = _client(fake, now=100.0)
+    fake.status = 429
+    with pytest.raises(OrchestrateError):
+        asyncio.run(client.steps(T1))
+    assert client._paused_until > 100.0
 
-    async def fake_sleep(seconds: float) -> None:
-        slept.append(seconds)
 
-    client = _client(FakeOrchestrate([]), now=100.0)
-    client._step_calls = [100.0] * 4  # four calls in the last minute
-    original = asyncio.sleep
-    asyncio.sleep = fake_sleep  # type: ignore[assignment]
-    try:
-        asyncio.run(client._wait_for_step_slot())
-    finally:
-        asyncio.sleep = original  # type: ignore[assignment]
-    assert slept and slept[0] > 59
+def test_opening_a_turn_after_the_list_is_served_from_the_prefetch(fake: FakeOrchestrate) -> None:
+    import asyncio
+
+    from httpx import ASGITransport
+
+    web_app = create_app(client=_client(fake), key=KEY)
+
+    async def run() -> int:
+        transport = ASGITransport(app=web_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://t") as c:
+            await c.get("/api/conversations", headers=H)
+            await asyncio.sleep(0.3)  # the background prefetch finishes
+            before = sum(p.endswith("/observations") for p in fake.calls)
+            replies = await asyncio.gather(
+                *(c.get(f"/api/traces/{T1}/steps", headers=H) for _ in range(5))
+            )
+            assert all(r.status_code == 200 for r in replies)
+            return sum(p.endswith("/observations") for p in fake.calls) - before
+
+    assert asyncio.run(run()) == 0  # five opens, no new download
 
 
 def test_model_text_extraction_and_orphans() -> None:

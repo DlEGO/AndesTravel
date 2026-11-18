@@ -7,7 +7,9 @@ and never stored, logged or returned.
 
 Traces list: ``GET /traces`` already carries ``agentId``, ``sessionId`` (the conversation),
 the user's message (``input``) and the answer (``output``). The steps of a turn are one
-call each (``GET /observations``, 4 per minute), so they are fetched on demand and cached.
+call each (``GET /observations``), so they are fetched on demand and cached. The ADK docs
+mention a limit of 4 per minute, but measured against the real API 12 calls in a row took
+20 s with no 429: no client-side throttle, only a concurrency cap and a pause on a real 429.
 """
 
 from __future__ import annotations
@@ -22,7 +24,8 @@ import httpx
 IAM_URL = "https://iam.cloud.ibm.com/identity/token"
 MAX_WINDOW = timedelta(hours=4)  # the API refuses wider windows
 PAGE = 100
-STEP_CALLS_PER_MINUTE = 4  # documented limit of /observations
+MAX_CONCURRENT_STEPS = 3  # parallel /observations calls; the API answers ~1.6 s each
+RATE_LIMIT_PAUSE = 20.0  # seconds to back off after a real 429
 
 
 class OrchestrateError(Exception):
@@ -45,8 +48,8 @@ class TracesClient:
         self.clock = clock
         self._token = ""
         self._token_until = 0.0
-        self._step_calls: list[float] = []
-        self._lock = asyncio.Lock()
+        self._slots = asyncio.Semaphore(MAX_CONCURRENT_STEPS)
+        self._paused_until = 0.0
 
     async def _bearer(self) -> str:
         if self._token and self.clock() < self._token_until:
@@ -74,7 +77,8 @@ class TracesClient:
                 f"{self.base}/v1/agentops-v3{path}", params=params, headers=headers
             )
         if resp.status_code == 429:
-            raise OrchestrateError("Orchestrate limitó las consultas; reintenta en un minuto")
+            self._paused_until = self.clock() + RATE_LIMIT_PAUSE
+            raise OrchestrateError("Orchestrate limitó las consultas; reintenta en unos segundos")
         if resp.status_code != 200:
             raise OrchestrateError(f"Orchestrate respondió {resp.status_code}")
         return resp.json()
@@ -102,34 +106,26 @@ class TracesClient:
             page += 1
 
     async def steps(self, trace_id: str, since: timedelta = MAX_WINDOW) -> list[dict]:
-        """Every observation of one trace, paginated; spaced to respect 4 calls per minute."""
+        """Every observation of one trace, paginated."""
         now = datetime.now(UTC)
         stamp = "%Y-%m-%dT%H:%M:%SZ"
         out: list[dict] = []
         page = 1
         while True:
-            await self._wait_for_step_slot()
-            body = await self._get(
-                "/observations",
-                {
-                    "limit": 1000,
-                    "traceId": trace_id,
-                    "page": page,
-                    "fromStartTime": (now - min(since, MAX_WINDOW)).strftime(stamp),
-                    "toStartTime": now.strftime(stamp),
-                },
-            )
+            async with self._slots:
+                if self.clock() < self._paused_until:  # a 429 was just seen: let it pass
+                    await asyncio.sleep(self._paused_until - self.clock())
+                body = await self._get(
+                    "/observations",
+                    {
+                        "limit": 1000,
+                        "traceId": trace_id,
+                        "page": page,
+                        "fromStartTime": (now - min(since, MAX_WINDOW)).strftime(stamp),
+                        "toStartTime": now.strftime(stamp),
+                    },
+                )
             out += body.get("data", [])
             if page >= (body.get("meta") or {}).get("totalPages", 1):
                 return out
             page += 1
-
-    async def _wait_for_step_slot(self) -> None:
-        async with self._lock:
-            now = self.clock()
-            self._step_calls = [t for t in self._step_calls if now - t < 60]
-            if len(self._step_calls) >= STEP_CALLS_PER_MINUTE:
-                await asyncio.sleep(60 - (now - self._step_calls[0]) + 0.5)
-                now = self.clock()
-                self._step_calls = [t for t in self._step_calls if now - t < 60]
-            self._step_calls.append(now)
