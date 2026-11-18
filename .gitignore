@@ -47,3 +47,5 @@ models/
 
 # local preview config (absolute paths)
 .claude/launch.json
+
+.vscode
