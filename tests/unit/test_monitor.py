@@ -267,3 +267,81 @@ def test_listing_reports_tokens_once_the_prefetch_has_run(fake: FakeOrchestrate)
     first, second = asyncio.run(run())
     assert first["conversations"][0]["usage"] is None
     assert second["conversations"][0]["usage"] == {"tokens": 154, "llm_calls": 2, "errors": 0}
+
+
+def test_after_a_failure_the_next_polls_do_not_hammer_orchestrate(fake: FakeOrchestrate) -> None:
+    now = [0.0]
+    web = TestClient(create_app(client=_client(fake), key=KEY, clock=lambda: now[0]))
+    assert web.get("/api/conversations", headers=H).json()["error"] is None
+    fake.status = 500
+    now[0] = 6.0  # the 5 s cache is stale: one upstream attempt, which fails
+    assert "500" in web.get("/api/conversations", headers=H).json()["error"]
+    before = sum(p.endswith("/traces") for p in fake.calls)
+    for t in (7.0, 12.0, 20.0):  # a 5 s poll would otherwise retry on every one of these
+        now[0] = t
+        reply = web.get("/api/conversations", headers=H).json()
+        assert reply["conversations"]  # the last good data keeps being served
+    assert sum(p.endswith("/traces") for p in fake.calls) == before  # within the pause
+    now[0] = 6.0 + 15.1
+    web.get("/api/conversations", headers=H)
+    assert sum(p.endswith("/traces") for p in fake.calls) == before + 1  # then it tries again
+
+
+def _recent(*items: dict) -> dict:
+    """Overrides the fake's trace list so that a 5-minute window returns only ``items``."""
+    return {"items": list(items)}
+
+
+def test_polling_between_full_listings_only_asks_for_recent_traces(
+    fake: FakeOrchestrate,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fake.traces = [_trace(T1, OURS, "s1", now_iso), _trace(T3, THEIRS, "o", now_iso)]
+    windows: list[str] = []
+    original = fake.__call__
+
+    def spy(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/traces"):
+            start = datetime.fromisoformat(
+                request.url.params["fromTimestamp"].replace("Z", "+00:00")
+            )
+            windows.append(
+                "recent" if datetime.now(UTC) - start < timedelta(minutes=10) else "full"
+            )
+        return original(request)
+
+    clock = [0.0]
+    http = httpx.AsyncClient(transport=httpx.MockTransport(spy))
+    client = TracesClient("https://wxo.test/instances/x", "k", {OURS}, http=http)
+    web = TestClient(create_app(client=client, key=KEY, clock=lambda: clock[0]))
+    for tick in (0.0, 6.0, 12.0, 18.0):  # 5 s cache expires each time
+        clock[0] = tick
+        assert [
+            c["id"] for c in web.get("/api/conversations", headers=H).json()["conversations"]
+        ] == ["s1"]
+    assert windows == ["full", "recent", "recent", "recent"]  # one full, then small calls
+    clock[0] = 61.0
+    web.get("/api/conversations", headers=H)
+    assert windows[-1] == "full"  # and a full one again after a minute
+
+
+def test_a_trace_that_is_still_growing_is_replaced_not_duplicated(fake: FakeOrchestrate) -> None:
+    from datetime import UTC, datetime
+
+    now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    fake.traces = [_trace(T1, OURS, "s1", now_iso, "primero")]
+    clock = [0.0]
+    web = TestClient(create_app(client=_client(fake), key=KEY, clock=lambda: clock[0]))
+    web.get("/api/conversations", headers=H)
+    fake.traces = [_trace(T1, OURS, "s1", now_iso, "version final")]
+    clock[0] = 6.0
+    turns = web.get("/api/conversations", headers=H).json()["conversations"][0]["turns"]
+    assert [t["user"] for t in turns] == ["version final"]
+
+
+def test_traces_older_than_the_window_drop_out(fake: FakeOrchestrate) -> None:
+    fake.traces = [_trace(T1, OURS, "s1", "2020-01-01T00:00:00Z")]  # far outside 4 h
+    web = TestClient(create_app(client=_client(fake), key=KEY))
+    assert web.get("/api/conversations", headers=H).json()["conversations"] == []

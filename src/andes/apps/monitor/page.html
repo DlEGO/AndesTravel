@@ -123,7 +123,18 @@ async function poll(){
     if (!cur && DATA.length) show(DATA[0].id, 0); else list();
   } catch (e) { if (e.auth) return gate('Clave incorrecta.'); $('#live').textContent = '⚠ sin conexión con el servidor'; $('#live').style.color = 'var(--err)'; }
 }
-function start(){ $('#gate').hidden = true; $('#app').hidden = false; poll(); timer = setInterval(poll, 15000); }
+// Poll every 5 s, but only while the tab is visible: a forgotten background tab must not keep
+// the (free-plan) service awake or hit Orchestrate. Coming back refreshes at once.
+const POLL_MS = 5000;
+let busy = false;
+async function tick(){ if (busy || document.hidden) return; busy = true; try { await poll(); } finally { busy = false; } }
+function schedule(){ clearInterval(timer); timer = setInterval(tick, POLL_MS); }
+document.addEventListener('visibilitychange', () => {
+  if (!KEY) return;
+  if (document.hidden) { clearInterval(timer); $('#live').textContent = '⏸ en pausa (pestaña oculta)'; $('#live').style.color = 'var(--mute)'; }
+  else { tick(); schedule(); }
+});
+function start(){ $('#gate').hidden = true; $('#app').hidden = false; tick(); schedule(); }
 $('#q').oninput = list;
 if (KEY) start(); else gate('');
 </script></body></html>

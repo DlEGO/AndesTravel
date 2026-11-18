@@ -20,6 +20,7 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -29,7 +30,10 @@ from andes.apps.monitor import model
 from andes.apps.monitor.orchestrate import OrchestrateError, TracesClient
 
 log = logging.getLogger("andes.monitor")
-CACHE_SECONDS = 10  # conversations list: many tabs, one upstream call
+CACHE_SECONDS = 5  # conversations list: many tabs, one upstream call
+RETRY_AFTER_ERROR = 15  # seconds before asking Orchestrate again after a failure
+FULL_REFRESH_SECONDS = 60  # a full 4 h listing (~400 KB, 2 calls) at most this often
+RECENT_WINDOW = timedelta(minutes=5)  # in between, only what is new (one small call)
 PREFETCH = 60  # newest turns whose steps are downloaded in the background (the 4 h window)
 STEPS_CACHE_SECONDS = 600
 PAGE = (Path(__file__).parent / "page.html").read_text(encoding="utf-8")
@@ -61,6 +65,8 @@ def create_app(
         lifespan=lifespan,
     )
     listing: dict = {"at": -1e9, "data": None}
+    known: dict[str, dict] = {}  # our traces by id, merged across incremental refreshes
+    full_at = [-1e9]  # when the last full 4 h listing ran
     steps_cache: dict[str, tuple[float, list[dict]]] = {}
     inflight: dict[str, asyncio.Task] = {}
     background: set[asyncio.Task] = set()  # keeps prefetch tasks alive until they finish
@@ -82,6 +88,27 @@ def create_app(
             inflight[trace_id] = task
             task.add_done_callback(lambda _: inflight.pop(trace_id, None))
         return await asyncio.shield(task)
+
+    async def refresh_traces() -> list[dict]:
+        """Our traces in the last 4 h. Full listing once a minute, only the recent ones between.
+
+        The full listing is ~400 KB over two calls; polling it every 5 s would be wasteful when
+        only the last minutes change. A recent trace can still be growing, so the newer copy
+        replaces the older; traces that left the 4 h window are dropped on each full listing
+        and by age in between.
+        """
+        if clock() - full_at[0] >= FULL_REFRESH_SECONDS or not known:
+            fresh = await client.turns()
+            known.clear()
+            known.update({t["id"]: t for t in fresh})
+            full_at[0] = clock()
+        else:
+            for trace in await client.turns(since=RECENT_WINDOW):
+                known[trace["id"]] = trace
+        cutoff = (datetime.now(UTC) - timedelta(hours=4)).strftime("%Y-%m-%dT%H:%M:%S")
+        for trace_id in [i for i, t in known.items() if t.get("timestamp", "")[:19] < cutoff]:
+            del known[trace_id]
+        return sorted(known.values(), key=lambda t: t.get("timestamp", ""), reverse=True)
 
     async def prefetch(traces: list[dict]) -> None:
         """Warm the cache for the newest turns so opening one is instant."""
@@ -114,7 +141,7 @@ def create_app(
         async with list_lock:
             if clock() - listing["at"] > CACHE_SECONDS:
                 try:
-                    traces = await client.turns()
+                    traces = await refresh_traces()
                     listing.update(
                         at=clock(),
                         data={"conversations": model.conversations(traces), "error": None},
@@ -127,7 +154,9 @@ def create_app(
                             {"conversations": [], "error": str(exc)}, headers=HEADERS
                         )
                     listing["data"] = {**listing["data"], "error": str(exc)}
-                    listing["at"] = clock() - CACHE_SECONDS + 5  # retry soon, keep the last data
+                    listing["at"] = (
+                        clock() - CACHE_SECONDS + RETRY_AFTER_ERROR
+                    )  # keep the last data
             data = listing["data"]
 
         def cached_tree(trace_id: str) -> list[dict] | None:
