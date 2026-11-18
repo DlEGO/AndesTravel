@@ -225,3 +225,45 @@ def test_without_configured_agent_ids_nothing_is_shown(fake: FakeOrchestrate) ->
     empty = TracesClient("https://wxo.test/instances/x", "apikey", set(), http=http)
     web = TestClient(create_app(client=empty, key=KEY))
     assert web.get("/api/conversations", headers=H).json()["conversations"] == []
+
+
+def test_usage_is_shown_only_for_turns_whose_steps_are_known() -> None:
+    steps = [
+        {"type": "GENERATION", "tokens": 100, "error": False},
+        {"type": "GENERATION", "tokens": 50, "error": True},
+        {"type": "SPAN", "tokens": 0, "error": False},
+    ]
+    convs = model.conversations(
+        [
+            _trace(T1, OURS, "s1", "2026-11-18T16:00:00Z"),
+            _trace(T2, OURS, "s1", "2026-11-18T16:01:00Z"),
+        ]
+    )
+    partial = model.with_usage(convs, lambda tid: steps if tid == T1 else None)[0]
+    assert partial["turns"][0]["usage"] == {"tokens": 150, "llm_calls": 2, "errors": 1}
+    assert partial["turns"][1]["usage"] is None  # unknown is not zero
+    assert partial["usage"] is None  # a total over unknown turns would be wrong
+    full = model.with_usage(convs, lambda _: steps)[0]
+    assert full["usage"] == {"tokens": 300, "llm_calls": 4, "errors": 2}
+
+
+def test_listing_reports_tokens_once_the_prefetch_has_run(fake: FakeOrchestrate) -> None:
+    import asyncio
+
+    from httpx import ASGITransport
+
+    fake.observations = [_obs("g", None, "00", "01", type="GENERATION", totalTokens=77)]
+    web_app = create_app(client=_client(fake), key=KEY)
+
+    async def run() -> tuple[dict, dict]:
+        async with httpx.AsyncClient(
+            transport=ASGITransport(app=web_app), base_url="http://t"
+        ) as c:
+            first = (await c.get("/api/conversations", headers=H)).json()
+            await asyncio.sleep(0.3)  # background prefetch
+            second = (await c.get("/api/conversations", headers=H)).json()
+            return first, second
+
+    first, second = asyncio.run(run())
+    assert first["conversations"][0]["usage"] is None
+    assert second["conversations"][0]["usage"] == {"tokens": 154, "llm_calls": 2, "errors": 0}

@@ -64,6 +64,38 @@ def conversations(traces: list[dict]) -> list[dict]:
     return out
 
 
+def usage(tree: list[dict]) -> dict:
+    """Token and LLM-call totals of a turn, from its step tree."""
+    return {
+        "tokens": sum(s["tokens"] for s in tree),
+        "llm_calls": sum(s["type"] == "GENERATION" for s in tree),
+        "errors": sum(s["error"] for s in tree),
+    }
+
+
+def with_usage(convs: list[dict], tree_of) -> list[dict]:
+    """Add usage to every turn whose steps are already known (``tree_of`` returns None if not).
+
+    A turn without steps keeps ``usage: None``: the list call carries no token data, and a
+    missing number must not be shown as zero. Conversation totals are None unless every
+    turn is known.
+    """
+    out = []
+    for conv in convs:
+        turns = []
+        for turn in conv["turns"]:
+            tree = tree_of(turn["trace_id"])
+            turns.append({**turn, "usage": usage(tree) if tree is not None else None})
+        known = [t["usage"] for t in turns]
+        total = (
+            None
+            if any(u is None for u in known)
+            else {k: sum(u[k] for u in known) for k in ("tokens", "llm_calls", "errors")}
+        )
+        out.append({**conv, "turns": turns, "usage": total})
+    return out
+
+
 def step_tree(observations: list[dict]) -> list[dict]:
     """Observations as a depth-first list with exact depth (via parent ids) and offsets."""
     by_parent: dict[str | None, list[dict]] = {}

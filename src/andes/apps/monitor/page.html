@@ -72,13 +72,18 @@ $('#f').onsubmit = async e => {
 };
 $('#out').onclick = () => { try { sessionStorage.removeItem('mk'); } catch (e) {} KEY = ''; DATA = []; gate(''); };
 
+function usagePills(u){
+  if (!u) return '<span class="pill" title="Los tokens se conocen al cargar los pasos de cada turno">tokens —</span>';
+  return `<span class="pill">${u.llm_calls} LLM</span><span class="pill">${u.tokens.toLocaleString()} tokens</span>`
+    + (u.errors ? `<span class="pill" style="color:var(--err);border-color:var(--err)">${u.errors} errores</span>` : '');
+}
 function list(){
   const q = $('#q').value.toLowerCase();
   const rows = DATA.filter(c => !q || c.id.includes(q) || c.turns.some(t => (t.user + ' ' + t.answer + t.trace_id).toLowerCase().includes(q)));
   $('#count').textContent = rows.length + ' de ' + DATA.length + ' conversaciones';
   $('#list').innerHTML = rows.length ? rows.map(c => `<div class="row${cur===c.id?' sel':''}" data-id="${esc(c.id)}">
     <b>${esc(local(c.started))}</b> <span class="mute">${fmt(c.latency_ms)}</span><br>
-    <span class="pill">${c.turns.length} ${c.turns.length===1?'turno':'turnos'}</span>
+    <span class="pill">${c.turns.length} ${c.turns.length===1?'turno':'turnos'}</span>${usagePills(c.usage)}
     <div class="mute" style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.turns[0].user)}</div></div>`).join('')
     : '<div class="empty">Sin conversaciones en las últimas 4 h.</div>';
   document.querySelectorAll('.row').forEach(r => r.onclick = () => show(r.dataset.id, 0));
@@ -87,10 +92,10 @@ async function show(id, i){
   cur = id; list();
   const c = DATA.find(x => x.id === id); if (!c || !c.turns[i]) return;
   const t = c.turns[i];
-  $('#detail').innerHTML = `<div class="mute">Conversación ${esc(c.id)} · ${c.turns.length} ${c.turns.length===1?'turno':'turnos'} · ${fmt(c.latency_ms)}</div>
-  <div class="turns" style="margin-top:8px">${c.turns.map((x,j) => `<button class="turn${j===i?' on':''}" data-j="${j}">Turno ${j+1} · ${fmt(x.latency_ms)}</button>`).join('')}</div>
+  $('#detail').innerHTML = `<div class="mute">Conversación ${esc(c.id)} · ${c.turns.length} ${c.turns.length===1?'turno':'turnos'} · ${fmt(c.latency_ms)}${c.usage?' · '+c.usage.tokens.toLocaleString()+' tokens · '+c.usage.llm_calls+' LLM':' · tokens: —'}</div>
+  <div class="turns" style="margin-top:8px">${c.turns.map((x,j) => `<button class="turn${j===i?' on':''}${x.usage&&x.usage.errors?' bad':''}" data-j="${j}">Turno ${j+1} · ${fmt(x.latency_ms)}${x.usage?' · '+x.usage.tokens.toLocaleString()+' tok':''}</button>`).join('')}</div>
   <div class="msg"><b>Viajero</b>${esc(t.user) || '—'}</div><div class="msg"><b>Asistente</b>${esc(t.answer) || '—'}</div>
-  <div class="mute" style="margin:8px 0">Traza ${esc(t.trace_id)} · ${esc(local(t.started))} · ${t.steps} pasos</div><div id="steps" class="mute">Cargando pasos…</div><div id="io"></div>`;
+  <div class="mute" style="margin:8px 0">Traza ${esc(t.trace_id)} · ${esc(local(t.started))} · ${t.steps} pasos${t.usage?' · '+t.usage.llm_calls+' LLM · '+t.usage.tokens.toLocaleString()+' tokens':''}</div><div id="steps" class="mute">Cargando pasos…</div><div id="io"></div>`;
   document.querySelectorAll('.turn[data-j]').forEach(b => b.onclick = () => show(id, +b.dataset.j));
   try {
     const d = await api('/api/traces/' + t.trace_id + '/steps');

@@ -14,6 +14,7 @@ key, and the page is never cached or indexed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hmac
 import logging
 import os
@@ -29,7 +30,7 @@ from andes.apps.monitor.orchestrate import OrchestrateError, TracesClient
 
 log = logging.getLogger("andes.monitor")
 CACHE_SECONDS = 10  # conversations list: many tabs, one upstream call
-PREFETCH = 12  # newest turns whose steps are downloaded in the background
+PREFETCH = 60  # newest turns whose steps are downloaded in the background (the 4 h window)
 STEPS_CACHE_SECONDS = 600
 PAGE = (Path(__file__).parent / "page.html").read_text(encoding="utf-8")
 HEADERS = {"Cache-Control": "no-store", "X-Robots-Tag": "noindex, nofollow"}
@@ -84,11 +85,13 @@ def create_app(
 
     async def prefetch(traces: list[dict]) -> None:
         """Warm the cache for the newest turns so opening one is instant."""
-        for trace in traces[:PREFETCH]:
-            try:
-                await load_steps(trace["id"])
-            except OrchestrateError:
-                return  # rate limited or down: opening a turn will report it
+        todo = [t["id"] for t in traces[:PREFETCH]]
+
+        async def one(trace_id: str) -> None:
+            with contextlib.suppress(OrchestrateError):  # opening a turn will report it
+                await load_steps(trace_id)
+
+        await asyncio.gather(*(one(t) for t in todo))  # the client caps real concurrency at 3
 
     def require_key(request: Request) -> None:
         given = request.headers.get("x-monitor-key", "")
@@ -126,7 +129,14 @@ def create_app(
                     listing["data"] = {**listing["data"], "error": str(exc)}
                     listing["at"] = clock() - CACHE_SECONDS + 5  # retry soon, keep the last data
             data = listing["data"]
-        return JSONResponse(data, headers=HEADERS)
+
+        def cached_tree(trace_id: str) -> list[dict] | None:
+            hit = steps_cache.get(trace_id)
+            return hit[1] if hit and clock() - hit[0] < STEPS_CACHE_SECONDS else None
+
+        # Usage is added on every read, so turns that finish prefetching show up next poll.
+        shown = {**data, "conversations": model.with_usage(data["conversations"], cached_tree)}
+        return JSONResponse(shown, headers=HEADERS)
 
     @app.get("/api/traces/{trace_id}/steps", dependencies=[Depends(require_key)])
     async def trace_steps(trace_id: str) -> JSONResponse:
