@@ -25,8 +25,6 @@ dependencies = [
     { name = "asyncpg" },
     { name = "fastapi" },
     { name = "httpx" },
-    { name = "langchain-core" },
-    { name = "langgraph" },
     { name = "mcp" },
     { name = "pgvector" },
     { name = "pydantic" },
@@ -38,8 +36,10 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
+    { name = "langchain-core" },
     { name = "langchain-ollama" },
     { name = "langfuse" },
+    { name = "langgraph" },
     { name = "numpy" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp" },
@@ -47,6 +47,10 @@ all = [
 ]
 embeddings = [
     { name = "numpy" },
+]
+legacy = [
+    { name = "langchain-core" },
+    { name = "langgraph" },
 ]
 llm = [
     { name = "langchain-ollama" },
@@ -72,14 +76,14 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = ">=1.13" },
-    { name = "andes-travel", extras = ["llm", "embeddings", "observability"], marker = "extra == 'all'" },
+    { name = "andes-travel", extras = ["legacy", "llm", "embeddings", "observability"], marker = "extra == 'all'" },
     { name = "asyncpg", specifier = ">=0.29" },
     { name = "fastapi", specifier = ">=0.111" },
     { name = "httpx", specifier = ">=0.27" },
-    { name = "langchain-core", specifier = ">=0.3" },
+    { name = "langchain-core", marker = "extra == 'legacy'", specifier = ">=0.3" },
     { name = "langchain-ollama", marker = "extra == 'llm'", specifier = ">=0.2" },
     { name = "langfuse", marker = "extra == 'observability'", specifier = ">=2.44" },
-    { name = "langgraph", specifier = ">=0.2.28" },
+    { name = "langgraph", marker = "extra == 'legacy'", specifier = ">=0.2.28" },
     { name = "mcp", specifier = ">=2.0" },
     { name = "numpy", marker = "extra == 'embeddings'", specifier = ">=1.26" },
     { name = "opentelemetry-api", marker = "extra == 'observability'", specifier = ">=1.25" },
@@ -92,7 +96,7 @@ requires-dist = [
     { name = "structlog", specifier = ">=24.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
-provides-extras = ["llm", "embeddings", "observability", "voice", "all"]
+provides-extras = ["legacy", "llm", "embeddings", "observability", "voice", "all"]
 
 [package.metadata.requires-dev]
 dev = [

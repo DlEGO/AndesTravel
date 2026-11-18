@@ -2,7 +2,8 @@
 # Built and run by Render (free plan, PORT=8080) on every push to the deploy branch;
 # IBM Code Engine (`make api-deploy`) is the alternative.
 
-# --- build: some deps (e.g. zstandard) have no Python 3.15 wheels yet and need a C compiler ---
+# --- build: some deps may have no Python 3.15 wheels yet and need a C compiler (the legacy
+# LangGraph extra, which pulled zstandard, is not installed here) ---
 FROM python:3.15-slim AS build
 
 RUN apt-get update \

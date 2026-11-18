@@ -17,12 +17,13 @@ dependencies = [
     "alembic>=1.13",
     "asyncpg>=0.29",
     "pgvector>=0.2.5",
-    "langgraph>=0.2.28",
-    "langchain-core>=0.3",
     "mcp>=2.0",
 ]
 
 [project.optional-dependencies]
+# The LangGraph supervisor (src/andes/agents/graph.py) is legacy: the PoC runs on watsonx
+# Orchestrate, so the production image does not install it.
+legacy = ["langgraph>=0.2.28", "langchain-core>=0.3"]
 llm = ["langchain-ollama>=0.2"]
 embeddings = ["numpy>=1.26"]
 observability = [
@@ -32,7 +33,7 @@ observability = [
     "opentelemetry-exporter-otlp>=1.25",
 ]
 voice = []  # optional voice deps omitted until cp315 wheels are available
-all = ["andes-travel[llm,embeddings,observability]"]
+all = ["andes-travel[legacy,llm,embeddings,observability]"]
 
 [dependency-groups]
 dev = [
