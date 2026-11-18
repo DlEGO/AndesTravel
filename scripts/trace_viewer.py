@@ -132,11 +132,14 @@ def load(directory: Path) -> list[dict]:
     return group(turns)
 
 
-def render(conversations: list[dict]) -> str:
+def render(conversations: list[dict], live: bool = False) -> str:
+    """The page. In live mode it starts empty and polls ``/data.json`` (see trace_live.py)."""
     # "</" would end the script block early: escape it inside the JSON payload.
     payload = json.dumps(conversations, ensure_ascii=False, default=str).replace("</", "<\\/")
-    return PAGE.replace("__TITLE__", html.escape("Andes Travel · conversaciones")).replace(
-        "__DATA__", payload
+    return (
+        PAGE.replace("__TITLE__", html.escape("Andes Travel · conversaciones"))
+        .replace("__LIVE__", "true" if live else "false")
+        .replace("__DATA__", payload)
     )
 
 
@@ -177,11 +180,12 @@ input{padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:
 background:var(--panel);color:var(--ink);cursor:pointer;font:inherit}.turn.on{background:var(--sel);border-color:var(--chain)}
 .turn.bad{border-color:var(--err)}
 </style></head><body>
-<header><h1>Andes Travel · conversaciones de Orchestrate</h1><span class="mute" id="count"></span>
+<header><h1>Andes Travel · conversaciones de Orchestrate</h1><span class="mute" id="count"></span><span class="mute" id="live"></span>
 <input id="q" placeholder="Filtrar por texto o ID" aria-label="Filtrar"></header>
 <main><div id="list"></div><div id="detail"><div class="empty">Elige una traza.</div></div></main>
 <script>
-const DATA = __DATA__;
+const LIVE = __LIVE__;
+let DATA = __DATA__;
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt = ms => ms >= 1000 ? (ms/1000).toFixed(2)+' s' : Math.round(ms)+' ms';
@@ -228,7 +232,19 @@ function span(t, i){
   $('#io').scrollIntoView({behavior:'smooth', block:'nearest'});
 }
 
+async function poll(){
+  try {
+    const r = await fetch('/data.json', {cache: 'no-store'});
+    const d = await r.json();
+    const open = cur && DATA.find(x => x.id === cur), grew = open && (d.conversations.find(x => x.id === cur) || {turns: []}).turns.length !== open.turns.length;
+    DATA = d.conversations;
+    $('#live').textContent = d.error ? '⚠ ' + d.error : '● en vivo · ' + d.updated;
+    $('#live').style.color = d.error ? 'var(--err)' : 'var(--gen)';
+    if (!cur && DATA.length) show(DATA[0].id, 0); else if (grew) show(cur, DATA.find(x => x.id === cur).turns.length - 1); else list();
+  } catch (e) { $('#live').textContent = '⚠ sin conexión con el servidor'; $('#live').style.color = 'var(--err)'; }
+}
 $('#q').oninput = list; list(); if (DATA.length) show(DATA[0].id, 0);
+if (LIVE) { poll(); setInterval(poll, 5000); }
 </script></body></html>
 """
 

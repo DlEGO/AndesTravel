@@ -24,6 +24,8 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +36,7 @@ ROW = re.compile(
 TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 UNKNOWN_AGENT = "-"
 MAX_INSPECT = 300  # unnamed traces fetched per run, newest first
+SETTLE_SECONDS = 180  # a trace younger than this may still be growing: fetch it again
 
 
 def our_agent_names() -> set[str]:
@@ -128,6 +131,53 @@ def save(trace: dict) -> Path:
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(trace, indent=2), encoding="utf-8")
     return out
+
+
+def _row_time(ts: str) -> datetime | None:
+    """The search table's timestamp (UTC), e.g. ``11/18/2026 , 03:49:58PM``."""
+    cleaned = " ".join(ts.replace(",", " ").split())
+    try:
+        return datetime.strptime(cleaned, "%m/%d/%Y %I:%M:%S%p").replace(tzinfo=UTC)
+    except ValueError:
+        return None
+
+
+def refresh(
+    last: str,
+    names: set[str],
+    ids: set[str],
+    ours: dict[str, dict],
+    foreign: set[str],
+    now: datetime | None = None,
+    fetcher: Callable[[str, str], dict | None] = fetch,
+) -> list[str]:
+    """Incremental update for the live viewer; mutates ``ours`` and ``foreign``.
+
+    Each trace is fetched once: ours are kept (and returned so the caller can save them),
+    foreign ones are remembered by id only. A trace younger than ``SETTLE_SECONDS`` is
+    fetched again until it settles, and is never written off as foreign while young
+    (its agent attributes may not be there yet).
+    """
+    now = now or datetime.now(UTC)
+    changed: list[str] = []
+    for row in search(last):
+        trace_id = row["id"]
+        if trace_id in foreign:
+            continue
+        started = _row_time(row["ts"])
+        young = started is None or (now - started).total_seconds() < SETTLE_SECONDS
+        if trace_id in ours and not young:
+            continue
+        trace = fetcher(trace_id, last)
+        if trace is None:
+            continue
+        if row["agent"] in names or is_ours(trace, ids):
+            if ours.get(trace_id) != trace:
+                ours[trace_id] = trace
+                changed.append(trace_id)
+        elif not young:
+            foreign.add(trace_id)
+    return changed
 
 
 def ours_in_window(last: str) -> list[tuple[dict[str, str], dict | None]]:

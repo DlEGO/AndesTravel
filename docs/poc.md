@@ -131,6 +131,16 @@ por `thread.id`), la cascada de pasos de cada turno (LLM, tools, tiempos) y la
 entrada/salida de cada paso. Es una página local sin ninguna petición externa, porque las
 trazas contienen lo que escribieron los viajeros; `build/` no se sube a git.
 
+**En vivo.** `make wxo-traces-live` abre un servidor local (`http://127.0.0.1:8765`) que
+consulta Orchestrate cada 15 s y actualiza la página sola, sin recargar. Cada traza se
+descarga una sola vez (las recientes, hasta que se asientan); las ajenas se recuerdan solo
+por id y nunca se guardan. Lo propio queda en `build/traces/`, así que el histórico
+sobrevive a un reinicio. Escucha solo en loopback y rechaza cualquier `Host` que no lo sea,
+para que otra página abierta en el navegador no pueda leer las conversaciones. La primera
+pasada es lenta (~2,5 min con ~70 trazas, porque clasifica una por una); después un ciclo
+tarda ~14 s. Si el token de Orchestrate vence, la página lo avisa: `make wxo-login` y
+reiniciar.
+
 Las trazas solo cubren las últimas horas; para conservar histórico hay que exportarlas.
 
 **Correlación con la tools API.** Orchestrate no envía `X-Request-ID` en las llamadas a las

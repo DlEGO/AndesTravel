@@ -125,6 +125,10 @@ wxo-traces-view: wxo-login ## Orchestrate: export our traces (LAST=4h) and build
 	$(PY) python scripts/trace_viewer.py
 	@open build/traces/index.html 2>/dev/null || echo "open build/traces/index.html"
 
+.PHONY: wxo-traces-live
+wxo-traces-live: wxo-login ## Orchestrate: live local viewer of our traces on http://127.0.0.1:8765 (PORT=, Ctrl+C stops)
+	$(WXO_PY) scripts/trace_live.py --port $(or $(PORT),8765)
+
 .PHONY: api-metrics
 api-metrics: ## Tools API: Prometheus metrics of the deployed service (needs TOOLS_API_URL, TOOLS_API_KEY in .env)
 	@set -a; . ./.env; set +a; curl -fsS -H "X-API-Key: $$TOOLS_API_KEY" "$$TOOLS_API_URL/metrics"
